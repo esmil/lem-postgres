@@ -24,14 +24,14 @@ do
 	local write, format, tostring = io.write, string.format, tostring
 
 	function prettyprint(t)
-		local widths = {}
-		for i = 1, #t[0] do
+		local widths, columns = {}, #t[0]
+		for i = 1, columns do
 			widths[i] = 0
 		end
 
 		for i = 0, #t do
 			local row = t[i]
-			for j = 1, #row do
+			for j = 1, columns do
 				local value = row[j]
 				if value and #value > widths[j] then
 					widths[j] = #value
@@ -45,7 +45,7 @@ do
 
 		for i = 0, #t do
 			local row = t[i]
-			for j = 1, #row do
+			for j = 1, columns do
 				write(format(widths[j], row[j] or 'NULL'))
 			end
 			write('\n')
