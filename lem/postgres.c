@@ -50,7 +50,7 @@ connection_gc(lua_State *T)
 	if (c->conn == NULL)
 		return 0;
 
-	ev_io_stop(EV_G_ &c->w);
+	ev_io_stop(LEM_ &c->w);
 	PQfinish(c->conn);
 	return 0;
 }
@@ -75,7 +75,7 @@ connection_close(lua_State *T)
 		c->T = NULL;
 	}
 
-	ev_io_stop(EV_G_ &c->w);
+	ev_io_stop(LEM_ &c->w);
 	PQfinish(c->conn);
 	c->conn = NULL;
 
@@ -181,7 +181,7 @@ connection_connect(lua_State *T)
 	}
 
 	c->T = T;
-	ev_io_start(EV_G_ &c->w);
+	ev_io_start(LEM_ &c->w);
 
 	lua_replace(T, 1);
 	lua_settop(T, 1);
@@ -241,7 +241,7 @@ connection_reset(lua_State *T)
 	}
 
 	c->T = T;
-	ev_io_start(EV_G_ &c->w);
+	ev_io_start(LEM_ &c->w);
 
 	lua_settop(T, 1);
 	return lua_yield(T, 1);
@@ -467,7 +467,7 @@ connection_exec(lua_State *T)
 	c->T = T;
 	c->w.cb = exec_handler;
 	c->w.events = EV_READ;
-	ev_io_start(EV_G_ &c->w);
+	ev_io_start(LEM_ &c->w);
 
 	lua_settop(T, 1);
 	return lua_yield(T, 1);
@@ -505,7 +505,7 @@ connection_prepare(lua_State *T)
 	c->T = T;
 	c->w.cb = exec_handler;
 	c->w.events = EV_READ;
-	ev_io_start(EV_G_ &c->w);
+	ev_io_start(LEM_ &c->w);
 
 	lua_settop(T, 1);
 	return lua_yield(T, 1);
@@ -560,7 +560,7 @@ connection_run(lua_State *T)
 	c->T = T;
 	c->w.cb = exec_handler;
 	c->w.events = EV_READ;
-	ev_io_start(EV_G_ &c->w);
+	ev_io_start(LEM_ &c->w);
 
 	lua_settop(T, 1);
 	return lua_yield(T, 1);
@@ -641,7 +641,7 @@ connection_put(lua_State *T)
 	c->T = T;
 	c->w.cb = put_handler;
 	c->w.events = EV_WRITE;
-	ev_io_start(EV_G_ &c->w);
+	ev_io_start(LEM_ &c->w);
 
 	lua_settop(T, 2);
 	return lua_yield(T, 2);
@@ -709,7 +709,7 @@ connection_done(lua_State *T)
 		c->T = T;
 		c->w.cb = exec_handler;
 		c->w.events = EV_READ;
-		ev_io_start(EV_G_ &c->w);
+		ev_io_start(LEM_ &c->w);
 		lua_settop(c->T, 1);
 		return lua_yield(c->T, 1);
 
@@ -725,7 +725,7 @@ connection_done(lua_State *T)
 	c->T = T;
 	c->w.cb = done_handler;
 	c->w.events = EV_WRITE;
-	ev_io_start(EV_G_ &c->w);
+	ev_io_start(LEM_ &c->w);
 
 	if (error == NULL) {
 		lua_settop(T, 1);
@@ -810,7 +810,7 @@ connection_get(lua_State *T)
 		c->T = T;
 		c->w.cb = get_handler;
 		c->w.events = EV_READ;
-		ev_io_start(EV_G_ &c->w);
+		ev_io_start(LEM_ &c->w);
 
 		lua_settop(T, 1);
 		return lua_yield(T, 1);
@@ -827,13 +827,13 @@ connection_get(lua_State *T)
 	c->T = T;
 	c->w.cb = exec_handler;
 	c->w.events = EV_READ;
-	ev_io_start(EV_G_ &c->w);
+	ev_io_start(LEM_ &c->w);
 
 	/* TODO: it is necessary but kinda ugly to call
 	 * the exec_handler directly from here.
 	 * find a better solution... */
 	lua_settop(T, 1);
-	exec_handler(EV_G_ &c->w, 0);
+	exec_handler(LEM_ &c->w, 0);
 	return lua_yield(T, 1);
 }
 

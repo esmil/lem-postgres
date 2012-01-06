@@ -1,11 +1,11 @@
 # Maintainer: Emil Renner Berthing <esmil@mailme.dk>
 
 pkgname=lem-postgres
-pkgver=0.1
+pkgver=0.3
 pkgrel=1
-pkgdesc="PostgreSQL library for the Lua Event Machine"
+pkgdesc='PostgreSQL library for the Lua Event Machine'
 arch=('i686' 'x86_64' 'armv5tel' 'armv7l')
-url="https://github.com/esmil/lem-postgres"
+url='https://github.com/esmil/lem-postgres'
 license=('GPL')
 depends=('lem' 'postgresql-libs')
 source=()
@@ -13,7 +13,7 @@ source=()
 build() {
   cd "$startdir"
 
-  make NDEBUG=1
+  make
 }
 
 package() {

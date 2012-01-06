@@ -105,7 +105,8 @@ do
 	db:unlock()
 end
 
-utils.timer(1.0, function()
+utils.spawn(function()
+	utils.sleeper():sleep(1.0)
 	assert(db:exec('DROP TABLE mytable'))
 end)
 

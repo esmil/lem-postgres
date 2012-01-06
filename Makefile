@@ -1,57 +1,62 @@
-CC         = gcc
-CFLAGS    ?= -O2 -pipe -Wall -Wextra -Wno-variadic-macros -Wno-strict-aliasing
-PKGCONFIG  = pkg-config
+CC         = gcc -std=gnu99
+CFLAGS    ?= -O2 -pipe -Wall -Wextra
+PKG_CONFIG = pkg-config
+PG_CONFIG  = pg_config
 STRIP      = strip
 INSTALL    = install
+UNAME      = uname
 
-CFLAGS    += $(shell $(PKGCONFIG) --cflags lem)
-LUA_PATH   = $(shell $(PKGCONFIG) --variable=path lem)
-LUA_CPATH  = $(shell $(PKGCONFIG) --variable=cpath lem)
+OS         = $(shell $(UNAME))
+CFLAGS    += $(shell $(PKG_CONFIG) --cflags lem)
+lmoddir    = $(shell $(PKG_CONFIG) --variable=INSTALL_LMOD lem)
+cmoddir    = $(shell $(PKG_CONFIG) --variable=INSTALL_CMOD lem)
 
-programs = postgres.so
-scripts  = queued.lua
-
-ifdef NDEBUG
-CFLAGS += -DNDEBUG
+ifeq ($(OS),Darwin)
+SHARED     = -dynamiclib -Wl,-undefined,dynamic_lookup
+STRIP     += -x
+else
+SHARED     = -shared
 endif
 
-.PHONY: all strip install clean
-.PRECIOUS: %.o
+llibs = lem/postgres/queued.lua
+clibs = lem/postgres.so
 
-all: $(programs)
+ifdef V
+E=@\#
+Q=
+else
+E=@echo
+Q=@
+endif
 
-%.o: %.c
-	@echo '  CC $@'
-	@$(CC) $(CFLAGS) -fPIC -nostartfiles -c $< -o $@
+.PHONY: all debug strip install clean
 
-postgres.so: CFLAGS += -I$(shell pg_config --includedir)
-postgres.so: postgres.o
-	@echo '  LD $@'
-	@$(CC) -shared -L$(shell pg_config --libdir) -lpq $(LDFLAGS) $^ -o $@
+all: CFLAGS += -DNDEBUG
+all: $(clibs)
+
+debug: $(clibs)
+
+lem/postgres.so: CFLAGS  += -I$(shell $(PG_CONFIG) --includedir)
+lem/postgres.so: LDFLAGS += -L$(shell $(PG_CONFIG) --libdir)
+lem/postgres.so: LIBS += -lpq
+lem/postgres.so: lem/postgres.c
+	$E '  CCLD  $@'
+	$Q$(CC) $(CFLAGS) -fPIC -nostartfiles $(SHARED) $^ -o $@ $(LDFLAGS) $(LIBS)
 
 %-strip: %
-	@echo '  STRIP $<'
-	@$(STRIP) $<
+	$E '  STRIP $<'
+	$Q$(STRIP) $<
 
-strip: $(programs:%=%-strip)
+strip: $(clibs:%=%-strip)
 
-path-install:
-	@echo "  INSTALL -d $(LUA_PATH)/lem/postgres"
-	@$(INSTALL) -d $(DESTDIR)$(LUA_PATH)/lem/postgres
+$(DESTDIR)$(lmoddir)/% $(DESTDIR)$(cmoddir)/%: %
+	$E '  INSTALL $@'
+	$Q$(INSTALL) -d $(dir $@)
+	$Q$(INSTALL) -m 644 $< $@
 
-%.lua-install: %.lua path-install
-	@echo "  INSTALL $<"
-	@$(INSTALL) -m644 $< $(DESTDIR)$(LUA_PATH)/lem/postgres/$<
-
-cpath-install:
-	@echo "  INSTALL -d $(LUA_CPATH)/lem"
-	@$(INSTALL) -d $(DESTDIR)$(LUA_CPATH)/lem
-
-%.so-install: %.so cpath-install
-	@echo "  INSTALL $<"
-	@$(INSTALL) $< $(DESTDIR)$(LUA_CPATH)/lem/$<
-
-install: $(programs:%=%-install) $(scripts:%=%-install)
+install: \
+	$(llibs:%=$(DESTDIR)$(lmoddir)/%) \
+	$(clibs:%=$(DESTDIR)$(cmoddir)/%)
 
 clean:
-	rm -f $(programs) *.o *.c~ *.h~
+	rm -f $(clibs)
