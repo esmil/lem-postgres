@@ -21,7 +21,7 @@
 #include <lem.h>
 #include <libpq-fe.h>
 
-struct connection {
+struct db {
 	struct ev_io w;
 	PGconn *conn;
 	lua_State *T;
@@ -60,75 +60,75 @@ err_connection(lua_State *T, PGconn *conn)
 }
 
 static int
-connection_gc(lua_State *T)
+db_gc(lua_State *T)
 {
-	struct connection *c = lua_touserdata(T, 1);
+	struct db *d = lua_touserdata(T, 1);
 
-	if (c->conn == NULL)
+	if (d->conn == NULL)
 		return 0;
 
-	ev_io_stop(LEM_ &c->w);
-	PQfinish(c->conn);
+	ev_io_stop(LEM_ &d->w);
+	PQfinish(d->conn);
 	return 0;
 }
 
 static int
-connection_close(lua_State *T)
+db_close(lua_State *T)
 {
-	struct connection *c;
+	struct db *d;
 
 	luaL_checktype(T, 1, LUA_TUSERDATA);
-	c = lua_touserdata(T, 1);
-	if (c->conn == NULL)
+	d = lua_touserdata(T, 1);
+	if (d->conn == NULL)
 		return err_closed(T);
 
-	if (c->T != NULL) {
-		lua_pushnil(c->T);
-		lua_pushliteral(c->T, "interrupted");
-		lem_queue(c->T, 2);
-		c->T = NULL;
+	if (d->T != NULL) {
+		lua_pushnil(d->T);
+		lua_pushliteral(d->T, "interrupted");
+		lem_queue(d->T, 2);
+		d->T = NULL;
 	}
 
-	ev_io_stop(LEM_ &c->w);
-	PQfinish(c->conn);
-	c->conn = NULL;
+	ev_io_stop(LEM_ &d->w);
+	PQfinish(d->conn);
+	d->conn = NULL;
 
 	lua_pushboolean(T, 1);
 	return 1;
 }
 
 static void
-connect_handler(EV_P_ struct ev_io *w, int revents)
+postgres_connect_cb(EV_P_ struct ev_io *w, int revents)
 {
-	struct connection *c = (struct connection *)w;
+	struct db *d = (struct db *)w;
 
 	(void)revents;
 
-	ev_io_stop(EV_A_ &c->w);
-	switch (PQconnectPoll(c->conn)) {
+	ev_io_stop(EV_A_ &d->w);
+	switch (PQconnectPoll(d->conn)) {
 	case PGRES_POLLING_READING:
-		lem_debug("PGRES_POLLING_READING, socket = %d", PQsocket(c->conn));
-		ev_io_set(&c->w, PQsocket(c->conn), EV_READ);
+		lem_debug("PGRES_POLLING_READING, socket = %d", PQsocket(d->conn));
+		ev_io_set(&d->w, PQsocket(d->conn), EV_READ);
 		break;
 
 	case PGRES_POLLING_WRITING:
-		lem_debug("PGRES_POLLING_WRITING, socket = %d", PQsocket(c->conn));
-		ev_io_set(&c->w, PQsocket(c->conn), EV_WRITE);
+		lem_debug("PGRES_POLLING_WRITING, socket = %d", PQsocket(d->conn));
+		ev_io_set(&d->w, PQsocket(d->conn), EV_WRITE);
 		break;
 
 	case PGRES_POLLING_FAILED:
 		lem_debug("PGRES_POLLING_FAILED");
-		lua_settop(c->T, 0);
-		lem_queue(c->T, err_connection(c->T, c->conn));
-		c->T = NULL;
-		PQfinish(c->conn);
-		c->conn = NULL;
+		lua_settop(d->T, 0);
+		lem_queue(d->T, err_connection(d->T, d->conn));
+		d->T = NULL;
+		PQfinish(d->conn);
+		d->conn = NULL;
 		return;
 
 	case PGRES_POLLING_OK:
 		lem_debug("PGRES_POLLING_OK");
-		lem_queue(c->T, 1);
-		c->T = NULL;
+		lem_queue(d->T, 1);
+		d->T = NULL;
 		return;
 
 #ifndef NDEBUG
@@ -137,16 +137,16 @@ connect_handler(EV_P_ struct ev_io *w, int revents)
 #endif
 	}
 
-	ev_io_start(EV_A_ &c->w);
+	ev_io_start(EV_A_ &d->w);
 }
 
 static int
-connection_connect(lua_State *T)
+postgres_connect(lua_State *T)
 {
 	const char *conninfo = luaL_checkstring(T, 1);
 	PGconn *conn;
 	ConnStatusType status;
-	struct connection *c;
+	struct db *d;
 
 	conn = PQconnectStart(conninfo);
 	if (conn == NULL) {
@@ -161,21 +161,21 @@ connection_connect(lua_State *T)
 		goto error;
 	}
 
-	c = lua_newuserdata(T, sizeof(struct connection));
+	d = lua_newuserdata(T, sizeof(struct db));
 	lua_pushvalue(T, lua_upvalueindex(1));
 	lua_setmetatable(T, -2);
 
-	c->conn = conn;
+	d->conn = conn;
 
 	switch (PQconnectPoll(conn)) {
 	case PGRES_POLLING_READING:
 		lem_debug("PGRES_POLLING_READING");
-		ev_io_init(&c->w, connect_handler, PQsocket(conn), EV_READ);
+		ev_io_init(&d->w, postgres_connect_cb, PQsocket(conn), EV_READ);
 		break;
 
 	case PGRES_POLLING_WRITING:
 		lem_debug("PGRES_POLLING_WRITING");
-		ev_io_init(&c->w, connect_handler, PQsocket(conn), EV_WRITE);
+		ev_io_init(&d->w, postgres_connect_cb, PQsocket(conn), EV_WRITE);
 		break;
 
 	case PGRES_POLLING_FAILED:
@@ -184,7 +184,7 @@ connection_connect(lua_State *T)
 
 	case PGRES_POLLING_OK:
 		lem_debug("PGRES_POLLING_OK");
-		c->T = NULL;
+		d->T = NULL;
 		return 1;
 
 #ifndef NDEBUG
@@ -193,8 +193,8 @@ connection_connect(lua_State *T)
 #endif
 	}
 
-	c->T = T;
-	ev_io_start(LEM_ &c->w);
+	d->T = T;
+	ev_io_start(LEM_ &d->w);
 
 	lua_replace(T, 1);
 	lua_settop(T, 1);
@@ -206,34 +206,34 @@ error:
 }
 
 static int
-connection_reset(lua_State *T)
+db_reset(lua_State *T)
 {
-	struct connection *c;
+	struct db *d;
 
 	luaL_checktype(T, 1, LUA_TUSERDATA);
-	c = lua_touserdata(T, 1);
-	if (c->conn == NULL)
+	d = lua_touserdata(T, 1);
+	if (d->conn == NULL)
 		return err_closed(T);
-	if (c->T != NULL)
+	if (d->T != NULL)
 		return err_busy(T);
-	if (PQresetStart(c->conn) != 1)
-		return err_connection(T, c->conn);
+	if (PQresetStart(d->conn) != 1)
+		return err_connection(T, d->conn);
 
-	c->w.cb = connect_handler;
-	switch (PQconnectPoll(c->conn)) {
+	d->w.cb = postgres_connect_cb;
+	switch (PQconnectPoll(d->conn)) {
 	case PGRES_POLLING_READING:
 		lem_debug("PGRES_POLLING_READING");
-		ev_io_set(&c->w, PQsocket(c->conn), EV_READ);
+		ev_io_set(&d->w, PQsocket(d->conn), EV_READ);
 		break;
 
 	case PGRES_POLLING_WRITING:
 		lem_debug("PGRES_POLLING_WRITING");
-		ev_io_set(&c->w, PQsocket(c->conn), EV_WRITE);
+		ev_io_set(&d->w, PQsocket(d->conn), EV_WRITE);
 		break;
 
 	case PGRES_POLLING_FAILED:
 		lem_debug("PGRES_POLLING_FAILED");
-		return err_connection(T, c->conn);
+		return err_connection(T, d->conn);
 
 	case PGRES_POLLING_OK:
 		lem_debug("PGRES_POLLING_OK");
@@ -245,8 +245,8 @@ connection_reset(lua_State *T)
 #endif
 	}
 
-	c->T = T;
-	ev_io_start(LEM_ &c->w);
+	d->T = T;
+	ev_io_start(LEM_ &d->w);
 
 	lua_settop(T, 1);
 	return lua_yield(T, 1);
@@ -285,27 +285,27 @@ push_tuples(lua_State *T, PGresult *res)
 }
 
 static void
-error_handler(EV_P_ struct ev_io *w, int revents)
+db_error_cb(EV_P_ struct ev_io *w, int revents)
 {
-	struct connection *c = (struct connection *)w;
+	struct db *d = (struct db *)w;
 
 	(void)revents;
 
-	if (PQconsumeInput(c->conn) == 0) {
-		ev_io_stop(EV_A_ &c->w);
-		lua_settop(c->T, 0);
-		lem_queue(c->T, err_connection(c->T, c->conn));
-		c->T = NULL;
+	if (PQconsumeInput(d->conn) == 0) {
+		ev_io_stop(EV_A_ &d->w);
+		lua_settop(d->T, 0);
+		lem_queue(d->T, err_connection(d->T, d->conn));
+		d->T = NULL;
 		return;
 	}
 
-	while (!PQisBusy(c->conn)) {
-		PGresult *res = PQgetResult(c->conn);
+	while (!PQisBusy(d->conn)) {
+		PGresult *res = PQgetResult(d->conn);
 
 		if (res == NULL) {
-			ev_io_stop(EV_A_ &c->w);
-			lem_queue(c->T, 2);
-			c->T = NULL;
+			ev_io_stop(EV_A_ &d->w);
+			lem_queue(d->T, 2);
+			d->T = NULL;
 			return;
 		}
 
@@ -314,65 +314,65 @@ error_handler(EV_P_ struct ev_io *w, int revents)
 }
 
 static void
-exec_handler(EV_P_ struct ev_io *w, int revents)
+db_exec_cb(EV_P_ struct ev_io *w, int revents)
 {
-	struct connection *c = (struct connection *)w;
+	struct db *d = (struct db *)w;
 	PGresult *res;
 
 	(void)revents;
 
-	if (PQconsumeInput(c->conn) != 1) {
-		ev_io_stop(EV_A_ &c->w);
-		lua_settop(c->T, 0);
-		lem_queue(c->T, err_connection(c->T, c->conn));
-		c->T = NULL;
+	if (PQconsumeInput(d->conn) != 1) {
+		ev_io_stop(EV_A_ &d->w);
+		lua_settop(d->T, 0);
+		lem_queue(d->T, err_connection(d->T, d->conn));
+		d->T = NULL;
 		return;
 	}
 
-	while (!PQisBusy(c->conn)) {
-		res = PQgetResult(c->conn);
+	while (!PQisBusy(d->conn)) {
+		res = PQgetResult(d->conn);
 
 		if (res == NULL) {
-			ev_io_stop(EV_A_ &c->w);
-			lem_debug("returning %d values", lua_gettop(c->T) - 1);
-			lem_queue(c->T, lua_gettop(c->T) - 1);
-			c->T = NULL;
+			ev_io_stop(EV_A_ &d->w);
+			lem_debug("returning %d values", lua_gettop(d->T) - 1);
+			lem_queue(d->T, lua_gettop(d->T) - 1);
+			d->T = NULL;
 			return;
 		}
 
 		switch (PQresultStatus(res)) {
 		case PGRES_EMPTY_QUERY:
 			lem_debug("PGRES_EMPTY_QUERY");
-			lua_settop(c->T, 0);
-			lua_pushnil(c->T);
-			lua_pushliteral(c->T, "empty query");
+			lua_settop(d->T, 0);
+			lua_pushnil(d->T);
+			lua_pushliteral(d->T, "empty query");
 			goto error;
 
 		case PGRES_COMMAND_OK:
 			lem_debug("PGRES_COMMAND_OK");
-			lua_pushboolean(c->T, 1);
+			lua_pushboolean(d->T, 1);
 			break;
 
 		case PGRES_TUPLES_OK:
 			lem_debug("PGRES_TUPLES_OK");
-			push_tuples(c->T, res);
+			push_tuples(d->T, res);
 			break;
 
 		case PGRES_COPY_IN:
 			lem_debug("PGRES_COPY_IN");
-			(void)PQsetnonblocking(c->conn, 1);
+			(void)PQsetnonblocking(d->conn, 1);
 		case PGRES_COPY_OUT:
 			lem_debug("PGRES_COPY_OUT");
 			PQclear(res);
-			lua_pushboolean(c->T, 1);
-			lem_queue(c->T, lua_gettop(c->T) - 1);
-			c->T = NULL;
+			lua_pushboolean(d->T, 1);
+			lem_queue(d->T, lua_gettop(d->T) - 1);
+			d->T = NULL;
 			return;
 
 		case PGRES_BAD_RESPONSE:
 			lem_debug("PGRES_BAD_RESPONSE");
-			lua_settop(c->T, 0);
-			err_connection(c->T, c->conn);
+			lua_settop(d->T, 0);
+			err_connection(d->T, d->conn);
 			goto error;
 
 		case PGRES_NONFATAL_ERROR:
@@ -381,15 +381,15 @@ exec_handler(EV_P_ struct ev_io *w, int revents)
 
 		case PGRES_FATAL_ERROR:
 			lem_debug("PGRES_FATAL_ERROR");
-			lua_settop(c->T, 0);
-			err_connection(c->T, c->conn);
+			lua_settop(d->T, 0);
+			err_connection(d->T, d->conn);
 			goto error;
 
 		default:
 			lem_debug("unknown result status");
-			lua_settop(c->T, 0);
-			lua_pushnil(c->T);
-			lua_pushliteral(c->T, "unknown result status");
+			lua_settop(d->T, 0);
+			lua_pushnil(d->T);
+			lua_pushliteral(d->T, "unknown result status");
 			goto error;
 		}
 
@@ -400,14 +400,14 @@ exec_handler(EV_P_ struct ev_io *w, int revents)
 	return;
 error:
 	PQclear(res);
-	c->w.cb = error_handler;
-	while (!PQisBusy(c->conn)) {
-		res = PQgetResult(c->conn);
+	d->w.cb = db_error_cb;
+	while (!PQisBusy(d->conn)) {
+		res = PQgetResult(d->conn);
 
 		if (res == NULL) {
-			ev_io_stop(EV_A_ &c->w);
-			lem_queue(c->T, 2);
-			c->T = NULL;
+			ev_io_stop(EV_A_ &d->w);
+			lem_queue(d->T, 2);
+			d->T = NULL;
 			return;
 		}
 
@@ -416,19 +416,19 @@ error:
 }
 
 static int
-connection_exec(lua_State *T)
+db_exec(lua_State *T)
 {
-	struct connection *c;
+	struct db *d;
 	const char *command;
 	int n;
 
 	luaL_checktype(T, 1, LUA_TUSERDATA);
 	command = luaL_checkstring(T, 2);
 
-	c = lua_touserdata(T, 1);
-	if (c->conn == NULL)
+	d = lua_touserdata(T, 1);
+	if (d->conn == NULL)
 		return err_closed(T);
-	if (c->T != NULL)
+	if (d->T != NULL)
 		return err_busy(T);
 
 	n = lua_gettop(T) - 2;
@@ -444,31 +444,31 @@ connection_exec(lua_State *T)
 			lengths[i] = len;
 		}
 
-		n = PQsendQueryParams(c->conn, command, n,
+		n = PQsendQueryParams(d->conn, command, n,
 		                      NULL, values, lengths, NULL, 0);
 		free(values);
 		free(lengths);
 	} else
-		n = PQsendQuery(c->conn, command);
+		n = PQsendQuery(d->conn, command);
 
 	if (n != 1) {
 		lem_debug("PQsendQuery failed");
-		return err_connection(T, c->conn);
+		return err_connection(T, d->conn);
 	}
 
-	c->T = T;
-	c->w.cb = exec_handler;
-	c->w.events = EV_READ;
-	ev_io_start(LEM_ &c->w);
+	d->T = T;
+	d->w.cb = db_exec_cb;
+	d->w.events = EV_READ;
+	ev_io_start(LEM_ &d->w);
 
 	lua_settop(T, 1);
 	return lua_yield(T, 1);
 }
 
 static int
-connection_prepare(lua_State *T)
+db_prepare(lua_State *T)
 {
-	struct connection *c;
+	struct db *d;
 	const char *name;
 	const char *query;
 
@@ -476,27 +476,27 @@ connection_prepare(lua_State *T)
 	name = luaL_checkstring(T, 2);
 	query = luaL_checkstring(T, 3);
 
-	c = lua_touserdata(T, 1);
-	if (c->conn == NULL)
+	d = lua_touserdata(T, 1);
+	if (d->conn == NULL)
 		return err_closed(T);
-	if (c->T != NULL)
+	if (d->T != NULL)
 		return err_busy(T);
-	if (PQsendPrepare(c->conn, name, query, 0, NULL) != 1)
-		return err_connection(T, c->conn);
+	if (PQsendPrepare(d->conn, name, query, 0, NULL) != 1)
+		return err_connection(T, d->conn);
 
-	c->T = T;
-	c->w.cb = exec_handler;
-	c->w.events = EV_READ;
-	ev_io_start(LEM_ &c->w);
+	d->T = T;
+	d->w.cb = db_exec_cb;
+	d->w.events = EV_READ;
+	ev_io_start(LEM_ &d->w);
 
 	lua_settop(T, 1);
 	return lua_yield(T, 1);
 }
 
 static int
-connection_run(lua_State *T)
+db_run(lua_State *T)
 {
-	struct connection *c;
+	struct db *d;
 	const char *name;
 	const char **values;
 	int *lengths;
@@ -506,10 +506,10 @@ connection_run(lua_State *T)
 	luaL_checktype(T, 1, LUA_TUSERDATA);
 	name = luaL_checkstring(T, 2);
 
-	c = lua_touserdata(T, 1);
-	if (c->conn == NULL)
+	d = lua_touserdata(T, 1);
+	if (d->conn == NULL)
 		return err_closed(T);
-	if (c->T != NULL)
+	if (d->T != NULL)
 		return err_busy(T);
 
 	n = lua_gettop(T) - 2;
@@ -523,41 +523,41 @@ connection_run(lua_State *T)
 		lengths[i] = len;
 	}
 
-	n = PQsendQueryPrepared(c->conn, name, n,
+	n = PQsendQueryPrepared(d->conn, name, n,
 	                        values, lengths, NULL, 0);
 	free(values);
 	free(lengths);
 	if (n != 1)
-		return err_connection(T, c->conn);
+		return err_connection(T, d->conn);
 
-	c->T = T;
-	c->w.cb = exec_handler;
-	c->w.events = EV_READ;
-	ev_io_start(LEM_ &c->w);
+	d->T = T;
+	d->w.cb = db_exec_cb;
+	d->w.events = EV_READ;
+	ev_io_start(LEM_ &d->w);
 
 	lua_settop(T, 1);
 	return lua_yield(T, 1);
 }
 
 static void
-put_handler(EV_P_ struct ev_io *w, int revents)
+db_put_cb(EV_P_ struct ev_io *w, int revents)
 {
-	struct connection *c = (struct connection *)w;
+	struct db *d = (struct db *)w;
 	size_t len;
 	const char *data;
 
 	(void)revents;
 
-	data = lua_tolstring(c->T, 2, &len);
-	switch (PQputCopyData(c->conn, data, (int)len)) {
+	data = lua_tolstring(d->T, 2, &len);
+	switch (PQputCopyData(d->conn, data, (int)len)) {
 	case 1: /* data sent */
 		lem_debug("data sent");
-		ev_io_stop(EV_A_ &c->w);
+		ev_io_stop(EV_A_ &d->w);
 
-		lua_settop(c->T, 0);
-		lua_pushboolean(c->T, 1);
-		lem_queue(c->T, 1);
-		c->T = NULL;
+		lua_settop(d->T, 0);
+		lua_pushboolean(d->T, 1);
+		lem_queue(d->T, 1);
+		d->T = NULL;
 		break;
 
 	case 0: /* would block */
@@ -565,30 +565,30 @@ put_handler(EV_P_ struct ev_io *w, int revents)
 		break;
 
 	default: /* should be -1 for error */
-		lua_settop(c->T, 0);
-		lem_queue(c->T, err_connection(c->T, c->conn));
-		c->T = NULL;
+		lua_settop(d->T, 0);
+		lem_queue(d->T, err_connection(d->T, d->conn));
+		d->T = NULL;
 		break;
 	}
 }
 
 static int
-connection_put(lua_State *T)
+db_put(lua_State *T)
 {
-	struct connection *c;
+	struct db *d;
 	size_t len;
 	const char *data;
 
 	luaL_checktype(T, 1, LUA_TUSERDATA);
 	data = luaL_checklstring(T, 2, &len);
 
-	c = lua_touserdata(T, 1);
-	if (c->conn == NULL)
+	d = lua_touserdata(T, 1);
+	if (d->conn == NULL)
 		return err_closed(T);
-	if (c->T != NULL)
+	if (d->T != NULL)
 		return err_busy(T);
 
-	switch (PQputCopyData(c->conn, data, (int)len)) {
+	switch (PQputCopyData(d->conn, data, (int)len)) {
 	case 1: /* data sent */
 		lem_debug("data sent");
 		lua_pushboolean(T, 1);
@@ -599,35 +599,35 @@ connection_put(lua_State *T)
 		break;
 
 	default: /* should be -1 for error */
-		return err_connection(T, c->conn);
+		return err_connection(T, d->conn);
 	}
 
-	c->T = T;
-	c->w.cb = put_handler;
-	c->w.events = EV_WRITE;
-	ev_io_start(LEM_ &c->w);
+	d->T = T;
+	d->w.cb = db_put_cb;
+	d->w.events = EV_WRITE;
+	ev_io_start(LEM_ &d->w);
 
 	lua_settop(T, 2);
 	return lua_yield(T, 2);
 }
 
 static void
-done_handler(EV_P_ struct ev_io *w, int revents)
+db_done_cb(EV_P_ struct ev_io *w, int revents)
 {
-	struct connection *c = (struct connection *)w;
-	const char *error = lua_tostring(c->T, 2);
+	struct db *d = (struct db *)w;
+	const char *error = lua_tostring(d->T, 2);
 
 	(void)revents;
 
-	switch (PQputCopyEnd(c->conn, error)) {
+	switch (PQputCopyEnd(d->conn, error)) {
 	case 1: /* data sent */
 		lem_debug("data sent");
-		ev_io_stop(EV_A_ &c->w);
-		lua_settop(c->T, 1);
-		(void)PQsetnonblocking(c->conn, 0);
-		c->w.cb = exec_handler;
-		c->w.events = EV_READ;
-		ev_io_start(EV_A_ &c->w);
+		ev_io_stop(EV_A_ &d->w);
+		lua_settop(d->T, 1);
+		(void)PQsetnonblocking(d->conn, 0);
+		d->w.cb = db_exec_cb;
+		d->w.events = EV_READ;
+		ev_io_start(EV_A_ &d->w);
 		break;
 
 	case 0: /* would block */
@@ -635,52 +635,52 @@ done_handler(EV_P_ struct ev_io *w, int revents)
 		break;
 
 	default: /* should be -1 for error */
-		ev_io_stop(EV_A_ &c->w);
-		lua_settop(c->T, 0);
-		lem_queue(c->T, err_connection(c->T, c->conn));
-		c->T = NULL;
+		ev_io_stop(EV_A_ &d->w);
+		lua_settop(d->T, 0);
+		lem_queue(d->T, err_connection(d->T, d->conn));
+		d->T = NULL;
 		break;
 	}
 }
 
 static int
-connection_done(lua_State *T)
+db_done(lua_State *T)
 {
-	struct connection *c;
+	struct db *d;
 	const char *error;
 
 	luaL_checktype(T, 1, LUA_TUSERDATA);
 	error = luaL_optstring(T, 2, NULL);
 
-	c = lua_touserdata(T, 1);
-	if (c->conn == NULL)
+	d = lua_touserdata(T, 1);
+	if (d->conn == NULL)
 		return err_closed(T);
-	if (c->T != NULL)
+	if (d->T != NULL)
 		return err_busy(T);
 
-	switch (PQputCopyEnd(c->conn, error)) {
+	switch (PQputCopyEnd(d->conn, error)) {
 	case 1: /* data sent */
 		lem_debug("data sent");
-		(void)PQsetnonblocking(c->conn, 0);
-		c->T = T;
-		c->w.cb = exec_handler;
-		c->w.events = EV_READ;
-		ev_io_start(LEM_ &c->w);
-		lua_settop(c->T, 1);
-		return lua_yield(c->T, 1);
+		(void)PQsetnonblocking(d->conn, 0);
+		d->T = T;
+		d->w.cb = db_exec_cb;
+		d->w.events = EV_READ;
+		ev_io_start(LEM_ &d->w);
+		lua_settop(d->T, 1);
+		return lua_yield(d->T, 1);
 
 	case 0: /* would block */
 		lem_debug("would block");
 		break;
 
 	default: /* should be -1 for error */
-		return err_connection(T, c->conn);
+		return err_connection(T, d->conn);
 	}
 
-	c->T = T;
-	c->w.cb = done_handler;
-	c->w.events = EV_WRITE;
-	ev_io_start(LEM_ &c->w);
+	d->T = T;
+	d->w.cb = db_done_cb;
+	d->w.events = EV_WRITE;
+	ev_io_start(LEM_ &d->w);
 
 	if (error == NULL) {
 		lua_settop(T, 1);
@@ -691,21 +691,21 @@ connection_done(lua_State *T)
 }
 
 static void
-get_handler(EV_P_ struct ev_io *w, int revents)
+db_get_cb(EV_P_ struct ev_io *w, int revents)
 {
-	struct connection *c = (struct connection *)w;
+	struct db *d = (struct db *)w;
 	char *buf;
 	int ret;
 
-	ret = PQgetCopyData(c->conn, &buf, 1);
+	ret = PQgetCopyData(d->conn, &buf, 1);
 	if (ret > 0) {
 		lem_debug("got data");
-		ev_io_stop(EV_A_ &c->w);
+		ev_io_stop(EV_A_ &d->w);
 
-		lua_pushlstring(c->T, buf, ret);
+		lua_pushlstring(d->T, buf, ret);
 		PQfreemem(buf);
-		lem_queue(c->T, 1);
-		c->T = NULL;
+		lem_queue(d->T, 1);
+		d->T = NULL;
 		return;
 	}
 
@@ -716,34 +716,34 @@ get_handler(EV_P_ struct ev_io *w, int revents)
 
 	case -1: /* no more data */
 		lem_debug("no more data");
-		c->w.cb = exec_handler;
-		exec_handler(EV_A_ &c->w, revents);
+		d->w.cb = db_exec_cb;
+		db_exec_cb(EV_A_ &d->w, revents);
 		break;
 
 	default: /* should be -2 for error */
-		ev_io_stop(EV_A_ &c->w);
-		lua_settop(c->T, 0);
-		lem_queue(c->T, err_connection(c->T, c->conn));
-		c->T = NULL;
+		ev_io_stop(EV_A_ &d->w);
+		lua_settop(d->T, 0);
+		lem_queue(d->T, err_connection(d->T, d->conn));
+		d->T = NULL;
 		break;
 	}
 }
 
 static int
-connection_get(lua_State *T)
+db_get(lua_State *T)
 {
-	struct connection *c;
+	struct db *d;
 	char *buf;
 	int ret;
 
 	luaL_checktype(T, 1, LUA_TUSERDATA);
-	c = lua_touserdata(T, 1);
-	if (c->conn == NULL)
+	d = lua_touserdata(T, 1);
+	if (d->conn == NULL)
 		return err_closed(T);
-	if (c->T != NULL)
+	if (d->T != NULL)
 		return err_busy(T);
 
-	ret = PQgetCopyData(c->conn, &buf, 1);
+	ret = PQgetCopyData(d->conn, &buf, 1);
 	if (ret > 0) {
 		lem_debug("got data");
 		lua_pushlstring(T, buf, ret);
@@ -754,10 +754,10 @@ connection_get(lua_State *T)
 	switch (ret) {
 	case 0: /* would block */
 		lem_debug("would block");
-		c->T = T;
-		c->w.cb = get_handler;
-		c->w.events = EV_READ;
-		ev_io_start(LEM_ &c->w);
+		d->T = T;
+		d->w.cb = db_get_cb;
+		d->w.events = EV_READ;
+		ev_io_start(LEM_ &d->w);
 
 		lua_settop(T, 1);
 		return lua_yield(T, 1);
@@ -767,19 +767,19 @@ connection_get(lua_State *T)
 		break;
 
 	default: /* should be -2 for error */
-		return err_connection(T, c->conn);
+		return err_connection(T, d->conn);
 	}
 
-	c->T = T;
-	c->w.cb = exec_handler;
-	c->w.events = EV_READ;
-	ev_io_start(LEM_ &c->w);
+	d->T = T;
+	d->w.cb = db_exec_cb;
+	d->w.events = EV_READ;
+	ev_io_start(LEM_ &d->w);
 
 	/* TODO: it is necessary but kinda ugly to call
-	 * the exec_handler directly from here.
+	 * the db_exec_cb directly from here.
 	 * find a better solution... */
 	lua_settop(T, 1);
-	exec_handler(LEM_ &c->w, 0);
+	db_exec_cb(LEM_ &d->w, 0);
 	return lua_yield(T, 1);
 }
 
@@ -792,37 +792,39 @@ luaopen_lem_postgres(lua_State *L)
 	lua_newtable(L);
 	lua_pushvalue(L, -1);
 	lua_setfield(L, -2, "__index");
-	/* mt.__gc = <connection_gc> */
-	lua_pushcfunction(L, connection_gc);
+	/* mt.__gc = <db_gc> */
+	lua_pushcfunction(L, db_gc);
 	lua_setfield(L, -2, "__gc");
-	/* mt.close = <connection_close> */
-	lua_pushcfunction(L, connection_close);
+	/* mt.close = <db_close> */
+	lua_pushcfunction(L, db_close);
 	lua_setfield(L, -2, "close");
-	/* mt.connect = <connection_connect> */
-	lua_pushvalue(L, -1); /* upvalue 1: Connection */
-	lua_pushcclosure(L, connection_connect, 1);
-	lua_setfield(L, -3, "connect");
-	/* mt.reset = <connection_reset> */
-	lua_pushcfunction(L, connection_reset);
+	/* mt.reset = <db_reset> */
+	lua_pushcfunction(L, db_reset);
 	lua_setfield(L, -2, "reset");
-	/* mt.exec = <connection_exec> */
-	lua_pushcfunction(L, connection_exec);
+	/* mt.exec = <db_exec> */
+	lua_pushcfunction(L, db_exec);
 	lua_setfield(L, -2, "exec");
-	/* mt.prepare = <connection_prepare> */
-	lua_pushcfunction(L, connection_prepare);
+	/* mt.prepare = <db_prepare> */
+	lua_pushcfunction(L, db_prepare);
 	lua_setfield(L, -2, "prepare");
-	/* mt.run = <connection_run> */
-	lua_pushcfunction(L, connection_run);
+	/* mt.run = <db_run> */
+	lua_pushcfunction(L, db_run);
 	lua_setfield(L, -2, "run");
-	/* mt.put = <connection_put> */
-	lua_pushcfunction(L, connection_put);
+	/* mt.put = <db_put> */
+	lua_pushcfunction(L, db_put);
 	lua_setfield(L, -2, "put");
-	/* mt.done = <connection_done> */
-	lua_pushcfunction(L, connection_done);
+	/* mt.done = <db_done> */
+	lua_pushcfunction(L, db_done);
 	lua_setfield(L, -2, "done");
-	/* mt.get = <connection_get> */
-	lua_pushcfunction(L, connection_get);
+	/* mt.get = <db_get> */
+	lua_pushcfunction(L, db_get);
 	lua_setfield(L, -2, "get");
+
+	/* connect = <postgres_connect> */
+	lua_pushvalue(L, -1); /* upvalue 1: Connection */
+	lua_pushcclosure(L, postgres_connect, 1);
+	lua_setfield(L, -3, "connect");
+
 	/* set Connection */
 	lua_setfield(L, -2, "Connection");
 
