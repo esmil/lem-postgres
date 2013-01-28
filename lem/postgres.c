@@ -27,8 +27,24 @@ struct connection {
 	lua_State *T;
 };
 
-static void
-push_error(lua_State *T, PGconn *conn)
+static int
+err_closed(lua_State *T)
+{
+	lua_pushnil(T);
+	lua_pushliteral(T, "closed");
+	return 2;
+}
+
+static int
+err_busy(lua_State *T)
+{
+	lua_pushnil(T);
+	lua_pushliteral(T, "busy");
+	return 2;
+}
+
+static int
+err_connection(lua_State *T, PGconn *conn)
 {
 	const char *msg = PQerrorMessage(conn);
 	const char *p;
@@ -40,6 +56,7 @@ push_error(lua_State *T, PGconn *conn)
 		lua_pushlstring(T, msg, p - msg);
 	else
 		lua_pushliteral(T, "unknown error");
+	return 2;
 }
 
 static int
@@ -62,11 +79,8 @@ connection_close(lua_State *T)
 
 	luaL_checktype(T, 1, LUA_TUSERDATA);
 	c = lua_touserdata(T, 1);
-	if (c->conn == NULL) {
-		lua_pushnil(T);
-		lua_pushliteral(T, "already closed");
-		return 2;
-	}
+	if (c->conn == NULL)
+		return err_closed(T);
 
 	if (c->T != NULL) {
 		lua_pushnil(c->T);
@@ -105,11 +119,10 @@ connect_handler(EV_P_ struct ev_io *w, int revents)
 	case PGRES_POLLING_FAILED:
 		lem_debug("PGRES_POLLING_FAILED");
 		lua_settop(c->T, 0);
-		push_error(c->T, c->conn);
+		lem_queue(c->T, err_connection(c->T, c->conn));
+		c->T = NULL;
 		PQfinish(c->conn);
 		c->conn = NULL;
-		lem_queue(c->T, 2);
-		c->T = NULL;
 		return;
 
 	case PGRES_POLLING_OK:
@@ -187,7 +200,7 @@ connection_connect(lua_State *T)
 	lua_settop(T, 1);
 	return lua_yield(T, 1);
 error:
-	push_error(T, conn);
+	err_connection(T, conn);
 	PQfinish(conn);
 	return 2;
 }
@@ -199,20 +212,12 @@ connection_reset(lua_State *T)
 
 	luaL_checktype(T, 1, LUA_TUSERDATA);
 	c = lua_touserdata(T, 1);
-	if (c->T != NULL) {
-		lua_pushnil(T);
-		lua_pushliteral(T, "busy");
-		return 2;
-	}
-
-	if (c->conn == NULL) {
-		lua_pushnil(T);
-		lua_pushliteral(T, "closed");
-		return 2;
-	}
-
+	if (c->conn == NULL)
+		return err_closed(T);
+	if (c->T != NULL)
+		return err_busy(T);
 	if (PQresetStart(c->conn) != 1)
-		goto error;
+		return err_connection(T, c->conn);
 
 	c->w.cb = connect_handler;
 	switch (PQconnectPoll(c->conn)) {
@@ -228,7 +233,7 @@ connection_reset(lua_State *T)
 
 	case PGRES_POLLING_FAILED:
 		lem_debug("PGRES_POLLING_FAILED");
-		goto error;
+		return err_connection(T, c->conn);
 
 	case PGRES_POLLING_OK:
 		lem_debug("PGRES_POLLING_OK");
@@ -245,9 +250,6 @@ connection_reset(lua_State *T)
 
 	lua_settop(T, 1);
 	return lua_yield(T, 1);
-error:
-	push_error(T, c->conn);
-	return 2;
 }
 
 static void
@@ -292,8 +294,7 @@ error_handler(EV_P_ struct ev_io *w, int revents)
 	if (PQconsumeInput(c->conn) == 0) {
 		ev_io_stop(EV_A_ &c->w);
 		lua_settop(c->T, 0);
-		push_error(c->T, c->conn);
-		lem_queue(c->T, 2);
+		lem_queue(c->T, err_connection(c->T, c->conn));
 		c->T = NULL;
 		return;
 	}
@@ -323,8 +324,7 @@ exec_handler(EV_P_ struct ev_io *w, int revents)
 	if (PQconsumeInput(c->conn) != 1) {
 		ev_io_stop(EV_A_ &c->w);
 		lua_settop(c->T, 0);
-		push_error(c->T, c->conn);
-		lem_queue(c->T, 2);
+		lem_queue(c->T, err_connection(c->T, c->conn));
 		c->T = NULL;
 		return;
 	}
@@ -372,7 +372,7 @@ exec_handler(EV_P_ struct ev_io *w, int revents)
 		case PGRES_BAD_RESPONSE:
 			lem_debug("PGRES_BAD_RESPONSE");
 			lua_settop(c->T, 0);
-			push_error(c->T, c->conn);
+			err_connection(c->T, c->conn);
 			goto error;
 
 		case PGRES_NONFATAL_ERROR:
@@ -382,7 +382,7 @@ exec_handler(EV_P_ struct ev_io *w, int revents)
 		case PGRES_FATAL_ERROR:
 			lem_debug("PGRES_FATAL_ERROR");
 			lua_settop(c->T, 0);
-			push_error(c->T, c->conn);
+			err_connection(c->T, c->conn);
 			goto error;
 
 		default:
@@ -426,17 +426,10 @@ connection_exec(lua_State *T)
 	command = luaL_checkstring(T, 2);
 
 	c = lua_touserdata(T, 1);
-	if (c->T != NULL) {
-		lua_pushnil(T);
-		lua_pushliteral(T, "busy");
-		return 2;
-	}
-
-	if (c->conn == NULL) {
-		lua_pushnil(T);
-		lua_pushliteral(T, "closed");
-		return 2;
-	}
+	if (c->conn == NULL)
+		return err_closed(T);
+	if (c->T != NULL)
+		return err_busy(T);
 
 	n = lua_gettop(T) - 2;
 	if (n > 0) {
@@ -460,8 +453,7 @@ connection_exec(lua_State *T)
 
 	if (n != 1) {
 		lem_debug("PQsendQuery failed");
-		push_error(T, c->conn);
-		return 2;
+		return err_connection(T, c->conn);
 	}
 
 	c->T = T;
@@ -485,22 +477,12 @@ connection_prepare(lua_State *T)
 	query = luaL_checkstring(T, 3);
 
 	c = lua_touserdata(T, 1);
-	if (c->T != NULL) {
-		lua_pushnil(T);
-		lua_pushliteral(T, "busy");
-		return 2;
-	}
-
-	if (c->conn == NULL) {
-		lua_pushnil(T);
-		lua_pushliteral(T, "closed");
-		return 2;
-	}
-
-	if (PQsendPrepare(c->conn, name, query, 0, NULL) != 1) {
-		push_error(T, c->conn);
-		return 2;
-	}
+	if (c->conn == NULL)
+		return err_closed(T);
+	if (c->T != NULL)
+		return err_busy(T);
+	if (PQsendPrepare(c->conn, name, query, 0, NULL) != 1)
+		return err_connection(T, c->conn);
 
 	c->T = T;
 	c->w.cb = exec_handler;
@@ -525,17 +507,10 @@ connection_run(lua_State *T)
 	name = luaL_checkstring(T, 2);
 
 	c = lua_touserdata(T, 1);
-	if (c->T != NULL) {
-		lua_pushnil(T);
-		lua_pushliteral(T, "busy");
-		return 2;
-	}
-
-	if (c->conn == NULL) {
-		lua_pushnil(T);
-		lua_pushliteral(T, "closed");
-		return 2;
-	}
+	if (c->conn == NULL)
+		return err_closed(T);
+	if (c->T != NULL)
+		return err_busy(T);
 
 	n = lua_gettop(T) - 2;
 	values = lem_xmalloc(n * sizeof(char *));
@@ -552,10 +527,8 @@ connection_run(lua_State *T)
 	                        values, lengths, NULL, 0);
 	free(values);
 	free(lengths);
-	if (n != 1) {
-		push_error(T, c->conn);
-		return 2;
-	}
+	if (n != 1)
+		return err_connection(T, c->conn);
 
 	c->T = T;
 	c->w.cb = exec_handler;
@@ -593,8 +566,7 @@ put_handler(EV_P_ struct ev_io *w, int revents)
 
 	default: /* should be -1 for error */
 		lua_settop(c->T, 0);
-		push_error(c->T, c->conn);
-		lem_queue(c->T, 2);
+		lem_queue(c->T, err_connection(c->T, c->conn));
 		c->T = NULL;
 		break;
 	}
@@ -611,17 +583,10 @@ connection_put(lua_State *T)
 	data = luaL_checklstring(T, 2, &len);
 
 	c = lua_touserdata(T, 1);
-	if (c->T != NULL) {
-		lua_pushnil(T);
-		lua_pushliteral(T, "busy");
-		return 2;
-	}
-
-	if (c->conn == NULL) {
-		lua_pushnil(T);
-		lua_pushliteral(T, "closed");
-		return 2;
-	}
+	if (c->conn == NULL)
+		return err_closed(T);
+	if (c->T != NULL)
+		return err_busy(T);
 
 	switch (PQputCopyData(c->conn, data, (int)len)) {
 	case 1: /* data sent */
@@ -634,8 +599,7 @@ connection_put(lua_State *T)
 		break;
 
 	default: /* should be -1 for error */
-		push_error(T, c->conn);
-		return 2;
+		return err_connection(T, c->conn);
 	}
 
 	c->T = T;
@@ -673,8 +637,7 @@ done_handler(EV_P_ struct ev_io *w, int revents)
 	default: /* should be -1 for error */
 		ev_io_stop(EV_A_ &c->w);
 		lua_settop(c->T, 0);
-		push_error(c->T, c->conn);
-		lem_queue(c->T, 2);
+		lem_queue(c->T, err_connection(c->T, c->conn));
 		c->T = NULL;
 		break;
 	}
@@ -690,17 +653,10 @@ connection_done(lua_State *T)
 	error = luaL_optstring(T, 2, NULL);
 
 	c = lua_touserdata(T, 1);
-	if (c->T != NULL) {
-		lua_pushnil(T);
-		lua_pushliteral(T, "busy");
-		return 2;
-	}
-
-	if (c->conn == NULL) {
-		lua_pushnil(T);
-		lua_pushliteral(T, "closed");
-		return 2;
-	}
+	if (c->conn == NULL)
+		return err_closed(T);
+	if (c->T != NULL)
+		return err_busy(T);
 
 	switch (PQputCopyEnd(c->conn, error)) {
 	case 1: /* data sent */
@@ -718,8 +674,7 @@ connection_done(lua_State *T)
 		break;
 
 	default: /* should be -1 for error */
-		push_error(T, c->conn);
-		return 2;
+		return err_connection(T, c->conn);
 	}
 
 	c->T = T;
@@ -768,8 +723,7 @@ get_handler(EV_P_ struct ev_io *w, int revents)
 	default: /* should be -2 for error */
 		ev_io_stop(EV_A_ &c->w);
 		lua_settop(c->T, 0);
-		push_error(c->T, c->conn);
-		lem_queue(c->T, 2);
+		lem_queue(c->T, err_connection(c->T, c->conn));
 		c->T = NULL;
 		break;
 	}
@@ -784,17 +738,10 @@ connection_get(lua_State *T)
 
 	luaL_checktype(T, 1, LUA_TUSERDATA);
 	c = lua_touserdata(T, 1);
-	if (c->T != NULL) {
-		lua_pushnil(T);
-		lua_pushliteral(T, "busy");
-		return 2;
-	}
-
-	if (c->conn == NULL) {
-		lua_pushnil(T);
-		lua_pushliteral(T, "closed");
-		return 2;
-	}
+	if (c->conn == NULL)
+		return err_closed(T);
+	if (c->T != NULL)
+		return err_busy(T);
 
 	ret = PQgetCopyData(c->conn, &buf, 1);
 	if (ret > 0) {
@@ -820,8 +767,7 @@ connection_get(lua_State *T)
 		break;
 
 	default: /* should be -2 for error */
-		push_error(T, c->conn);
-		return 2;
+		return err_connection(T, c->conn);
 	}
 
 	c->T = T;
