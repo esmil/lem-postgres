@@ -56,10 +56,15 @@ end
 local utils    = require 'lem.utils'
 local postgres = require 'lem.postgres'
 
-local db = assert(postgres.connect("host=localhost dbname=mydb"))
+local db = assert(postgres.connect([[
+host=localhost
+user=myuser
+password=mypasswd
+dbname=mydb
+]]))
 
 assert(db:exec(
-'CREATE TABLE mytable (id integer PRIMARY KEY, name CHARACTER VARYING)'))
+'CREATE TABLE mytable (id integer PRIMARY KEY, name TEXT)'))
 
 assert(db:exec("COPY mytable FROM STDIN (delimiter ',')"))
 assert(db:put('1,alpha\n'))
