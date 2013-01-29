@@ -200,6 +200,49 @@ error:
 	return 2;
 }
 
+static void
+db_reset_cb(EV_P_ struct ev_io *w, int revents)
+{
+	struct db *d = (struct db *)w;
+
+	(void)revents;
+
+	ev_io_stop(EV_A_ &d->w);
+	switch (PQresetPoll(d->conn)) {
+	case PGRES_POLLING_READING:
+		lem_debug("PGRES_POLLING_READING, socket = %d", PQsocket(d->conn));
+		ev_io_set(&d->w, PQsocket(d->conn), EV_READ);
+		break;
+
+	case PGRES_POLLING_WRITING:
+		lem_debug("PGRES_POLLING_WRITING, socket = %d", PQsocket(d->conn));
+		ev_io_set(&d->w, PQsocket(d->conn), EV_WRITE);
+		break;
+
+	case PGRES_POLLING_FAILED:
+		lem_debug("PGRES_POLLING_FAILED");
+		lua_settop(d->T, 0);
+		lem_queue(d->T, err_connection(d->T, d->conn));
+		d->T = NULL;
+		PQfinish(d->conn);
+		d->conn = NULL;
+		return;
+
+	case PGRES_POLLING_OK:
+		lem_debug("PGRES_POLLING_OK");
+		lem_queue(d->T, 1);
+		d->T = NULL;
+		return;
+
+#ifndef NDEBUG
+	case PGRES_POLLING_ACTIVE:
+		assert(0);
+#endif
+	}
+
+	ev_io_start(EV_A_ &d->w);
+}
+
 static int
 db_reset(lua_State *T)
 {
@@ -215,7 +258,7 @@ db_reset(lua_State *T)
 		return err_connection(T, d->conn);
 
 	lua_settop(T, 1);
-	switch (PQconnectPoll(d->conn)) {
+	switch (PQresetPoll(d->conn)) {
 	case PGRES_POLLING_READING:
 		lem_debug("PGRES_POLLING_READING");
 		ev_io_set(&d->w, PQsocket(d->conn), EV_READ);
@@ -241,7 +284,7 @@ db_reset(lua_State *T)
 	}
 
 	d->T = T;
-	d->w.cb = postgres_connect_cb;
+	d->w.cb = db_reset_cb;
 	ev_io_start(LEM_ &d->w);
 	return lua_yield(T, 1);
 }
