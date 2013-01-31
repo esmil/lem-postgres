@@ -96,6 +96,14 @@ db_close(lua_State *T)
 }
 
 static void
+db_notice_receiver(void *arg, const PGresult *res)
+{
+	(void)arg;
+	(void)res;
+	lem_debug("%s", PQresultErrorMessage(res));
+}
+
+static void
 postgres_connect_cb(EV_P_ struct ev_io *w, int revents)
 {
 	struct db *d = (struct db *)w;
@@ -163,6 +171,7 @@ postgres_connect(lua_State *T)
 	lua_setmetatable(T, -2);
 
 	d->conn = conn;
+	PQsetNoticeReceiver(conn, db_notice_receiver, NULL);
 
 	switch (PQconnectPoll(conn)) {
 	case PGRES_POLLING_READING:
