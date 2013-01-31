@@ -452,7 +452,7 @@ db_exec(lua_State *T)
 
 	d->T = T;
 	d->w.cb = db_exec_cb;
-	d->w.events = EV_READ;
+	ev_io_set(&d->w, PQsocket(d->conn), EV_READ);
 	ev_io_start(LEM_ &d->w);
 
 	lua_settop(T, 1);
@@ -480,7 +480,7 @@ db_prepare(lua_State *T)
 
 	d->T = T;
 	d->w.cb = db_exec_cb;
-	d->w.events = EV_READ;
+	ev_io_set(&d->w, PQsocket(d->conn), EV_READ);
 	ev_io_start(LEM_ &d->w);
 
 	lua_settop(T, 1);
@@ -526,7 +526,7 @@ db_run(lua_State *T)
 
 	d->T = T;
 	d->w.cb = db_exec_cb;
-	d->w.events = EV_READ;
+	ev_io_set(&d->w, PQsocket(d->conn), EV_READ);
 	ev_io_start(LEM_ &d->w);
 
 	lua_settop(T, 1);
@@ -600,7 +600,7 @@ db_put(lua_State *T)
 
 	d->T = T;
 	d->w.cb = db_put_cb;
-	d->w.events = EV_WRITE;
+	ev_io_set(&d->w, PQsocket(d->conn), EV_WRITE);
 	ev_io_start(LEM_ &d->w);
 
 	lua_settop(T, 2);
@@ -622,7 +622,7 @@ db_done_cb(EV_P_ struct ev_io *w, int revents)
 		lua_settop(d->T, 1);
 		(void)PQsetnonblocking(d->conn, 0);
 		d->w.cb = db_exec_cb;
-		d->w.events = EV_READ;
+		ev_io_set(&d->w, PQsocket(d->conn), EV_READ);
 		ev_io_start(EV_A_ &d->w);
 		break;
 
@@ -660,7 +660,7 @@ db_done(lua_State *T)
 		(void)PQsetnonblocking(d->conn, 0);
 		d->T = T;
 		d->w.cb = db_exec_cb;
-		d->w.events = EV_READ;
+		ev_io_set(&d->w, PQsocket(d->conn), EV_READ);
 		ev_io_start(LEM_ &d->w);
 		lua_settop(d->T, 1);
 		return lua_yield(d->T, 1);
@@ -675,7 +675,7 @@ db_done(lua_State *T)
 
 	d->T = T;
 	d->w.cb = db_done_cb;
-	d->w.events = EV_WRITE;
+	ev_io_set(&d->w, PQsocket(d->conn), EV_WRITE);
 	ev_io_start(LEM_ &d->w);
 
 	if (error == NULL) {
@@ -752,7 +752,7 @@ db_get(lua_State *T)
 		lem_debug("would block");
 		d->T = T;
 		d->w.cb = db_get_cb;
-		d->w.events = EV_READ;
+		ev_io_set(&d->w, PQsocket(d->conn), EV_READ);
 		ev_io_start(LEM_ &d->w);
 
 		lua_settop(T, 1);
@@ -768,7 +768,7 @@ db_get(lua_State *T)
 
 	d->T = T;
 	d->w.cb = db_exec_cb;
-	d->w.events = EV_READ;
+	ev_io_set(&d->w, PQsocket(d->conn), EV_READ);
 	ev_io_start(LEM_ &d->w);
 
 	/* TODO: it is necessary but kinda ugly to call
