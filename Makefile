@@ -8,6 +8,9 @@ UNAME      = uname
 
 OS         = $(shell $(UNAME))
 CFLAGS    += $(shell $(PKG_CONFIG) --cflags lem)
+CFLAGS    += -I$(shell $(PG_CONFIG) --includedir)
+LDFLAGS   += -L$(shell $(PG_CONFIG) --libdir)
+LIBS       = -lpq
 lmoddir    = $(shell $(PKG_CONFIG) --variable=INSTALL_LMOD lem)
 cmoddir    = $(shell $(PKG_CONFIG) --variable=INSTALL_CMOD lem)
 
@@ -36,9 +39,6 @@ all: $(clibs)
 
 debug: $(clibs)
 
-lem/postgres.so: CFLAGS  += -I$(shell $(PG_CONFIG) --includedir)
-lem/postgres.so: LDFLAGS += -L$(shell $(PG_CONFIG) --libdir)
-lem/postgres.so: LIBS += -lpq
 lem/postgres.so: lem/postgres.c
 	$E '  CCLD  $@'
 	$Q$(CC) $(CFLAGS) -fPIC -nostartfiles $(SHARED) $^ -o $@ $(LDFLAGS) $(LIBS)
