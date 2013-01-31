@@ -64,11 +64,9 @@ db_gc(lua_State *T)
 {
 	struct db *d = lua_touserdata(T, 1);
 
-	if (d->conn == NULL)
-		return 0;
+	if (d->conn != NULL)
+		PQfinish(d->conn);
 
-	ev_io_stop(LEM_ &d->w);
-	PQfinish(d->conn);
 	return 0;
 }
 
@@ -83,13 +81,13 @@ db_close(lua_State *T)
 		return err_closed(T);
 
 	if (d->T != NULL) {
+		ev_io_stop(LEM_ &d->w);
 		lua_pushnil(d->T);
 		lua_pushliteral(d->T, "interrupted");
 		lem_queue(d->T, 2);
 		d->T = NULL;
 	}
 
-	ev_io_stop(LEM_ &d->w);
 	PQfinish(d->conn);
 	d->conn = NULL;
 
@@ -145,7 +143,6 @@ postgres_connect(lua_State *T)
 {
 	const char *conninfo = luaL_checkstring(T, 1);
 	PGconn *conn;
-	ConnStatusType status;
 	struct db *d;
 
 	conn = PQconnectStart(conninfo);
@@ -155,12 +152,12 @@ postgres_connect(lua_State *T)
 		return 2;
 	}
 
-	status = PQstatus(conn);
-	if (status == CONNECTION_BAD) {
+	if (PQstatus(conn) == CONNECTION_BAD) {
 		lem_debug("CONNECTION_BAD");
 		goto error;
 	}
 
+	lua_settop(T, 0);
 	d = lua_newuserdata(T, sizeof(struct db));
 	lua_pushvalue(T, lua_upvalueindex(1));
 	lua_setmetatable(T, -2);
@@ -180,11 +177,12 @@ postgres_connect(lua_State *T)
 
 	case PGRES_POLLING_FAILED:
 		lem_debug("PGRES_POLLING_FAILED");
+		d->conn = NULL;
 		goto error;
 
 	case PGRES_POLLING_OK:
 		lem_debug("PGRES_POLLING_OK");
-		d->T = NULL;
+		ev_io_init(&d->w, NULL, PQsocket(conn), 0);
 		return 1;
 
 #ifndef NDEBUG
@@ -195,9 +193,6 @@ postgres_connect(lua_State *T)
 
 	d->T = T;
 	ev_io_start(LEM_ &d->w);
-
-	lua_replace(T, 1);
-	lua_settop(T, 1);
 	return lua_yield(T, 1);
 error:
 	err_connection(T, conn);
@@ -219,7 +214,7 @@ db_reset(lua_State *T)
 	if (PQresetStart(d->conn) != 1)
 		return err_connection(T, d->conn);
 
-	d->w.cb = postgres_connect_cb;
+	lua_settop(T, 1);
 	switch (PQconnectPoll(d->conn)) {
 	case PGRES_POLLING_READING:
 		lem_debug("PGRES_POLLING_READING");
@@ -246,9 +241,8 @@ db_reset(lua_State *T)
 	}
 
 	d->T = T;
+	d->w.cb = postgres_connect_cb;
 	ev_io_start(LEM_ &d->w);
-
-	lua_settop(T, 1);
 	return lua_yield(T, 1);
 }
 
@@ -545,6 +539,7 @@ db_put_cb(EV_P_ struct ev_io *w, int revents)
 	struct db *d = (struct db *)w;
 	size_t len;
 	const char *data;
+	int ret;
 
 	(void)revents;
 
@@ -552,24 +547,25 @@ db_put_cb(EV_P_ struct ev_io *w, int revents)
 	switch (PQputCopyData(d->conn, data, (int)len)) {
 	case 1: /* data sent */
 		lem_debug("data sent");
-		ev_io_stop(EV_A_ &d->w);
-
 		lua_settop(d->T, 0);
 		lua_pushboolean(d->T, 1);
-		lem_queue(d->T, 1);
-		d->T = NULL;
+		ret = 1;
 		break;
 
 	case 0: /* would block */
 		lem_debug("would block");
-		break;
+		return;
 
 	default: /* should be -1 for error */
+		lem_debug("error");
 		lua_settop(d->T, 0);
-		lem_queue(d->T, err_connection(d->T, d->conn));
-		d->T = NULL;
+		ret = err_connection(d->T, d->conn);
 		break;
 	}
+
+	ev_io_stop(EV_A_ &d->w);
+	lem_queue(d->T, ret);
+	d->T = NULL;
 }
 
 static int
