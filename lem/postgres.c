@@ -476,8 +476,15 @@ db_exec(lua_State *T)
 
 		for (i = 0; i < n; i++) {
 			size_t len;
+			const char *val = lua_tolstring(T, i+3, &len);
 
-			values[i] = lua_tolstring(T, i+3, &len);
+			if (val == NULL) {
+				free(values);
+				free(lengths);
+				return luaL_argerror(T, i+3, "expected string");
+			}
+
+			values[i] = val;
 			lengths[i] = len;
 		}
 
@@ -535,10 +542,7 @@ db_run(lua_State *T)
 {
 	struct db *d;
 	const char *name;
-	const char **values;
-	int *lengths;
 	int n;
-	int i;
 
 	luaL_checktype(T, 1, LUA_TUSERDATA);
 	name = luaL_checkstring(T, 2);
@@ -550,20 +554,32 @@ db_run(lua_State *T)
 		return err_busy(T);
 
 	n = lua_gettop(T) - 2;
-	values = lem_xmalloc(n * sizeof(char *));
-	lengths = lem_xmalloc(n * sizeof(int));
+	if (n > 0) {
+		const char **values = lem_xmalloc(n * sizeof(char *));
+		int *lengths = lem_xmalloc(n * sizeof(int));
+		int i;
 
-	for (i = 0; i < n; i++) {
-		size_t len;
+		for (i = 0; i < n; i++) {
+			size_t len;
+			const char *val = lua_tolstring(T, i+3, &len);
 
-		values[i] = lua_tolstring(T, i+3, &len);
-		lengths[i] = len;
-	}
+			if (val == NULL) {
+				free(values);
+				free(lengths);
+				return luaL_argerror(T, i+3, "expected string");
+			}
 
-	n = PQsendQueryPrepared(d->conn, name, n,
-	                        values, lengths, NULL, 0);
-	free(values);
-	free(lengths);
+			values[i] = val;
+			lengths[i] = len;
+		}
+
+		n = PQsendQueryPrepared(d->conn, name, n,
+				values, lengths, NULL, 0);
+		free(values);
+		free(lengths);
+	} else
+		n = PQsendQueryPrepared(d->conn, name, 0, NULL, NULL, NULL, 0);
+
 	if (n != 1)
 		return err_connection(T, d->conn);
 
