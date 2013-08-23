@@ -2,6 +2,7 @@
 --
 -- This file is part of lem-postgres.
 -- Copyright 2011 Emil Renner Berthing
+-- Copyright 2013 Asbjørn Sloth Tønnesen
 --
 -- lem-postgres is free software: you can redistribute it and/or
 -- modify it under the terms of the GNU General Public License as
@@ -16,6 +17,9 @@
 -- You should have received a copy of the GNU General Public License
 -- along with lem-postgres. If not, see <http://www.gnu.org/licenses/>.
 --
+
+package.path = '?.lua;'..package.path
+package.cpath = '?.so;'..package.cpath
 
 print("Entering " .. arg[0])
 
@@ -64,13 +68,14 @@ dbname=mydb
 ]]))
 
 assert(db:exec(
-'CREATE TABLE mytable (id integer PRIMARY KEY, name TEXT)'))
+'CREATE TABLE mytable (id serial PRIMARY KEY, name TEXT, foo integer)'))
 
-assert(db:exec("COPY mytable FROM STDIN (delimiter ',')"))
-assert(db:put('1,alpha\n'))
-assert(db:put('2,beta\n'))
-assert(db:put('3,gamma\n'))
-assert(db:put('4,delta\n'))
+assert(db:exec("COPY mytable (name, foo) FROM STDIN (delimiter ',')"))
+assert(db:put('alpha,1\n'))
+assert(db:put('beta,2\n'))
+assert(db:put('gamma,4\n'))
+assert(db:put('delta,8\n'))
+assert(db:put('epsilon,\\N\n'))
 assert(db:done())
 
 local res = assert(db:exec('SELECT * FROM mytable WHERE id = $1', '1'))
@@ -86,7 +91,11 @@ assert(db:prepare('mystmt', 'SELECT * FROM mytable WHERE id = $1'))
 local res = assert(db:run('mystmt', '3'))
 prettyprint(res)
 
-assert(db:exec("COPY mytable TO STDIN (format csv)"))
+assert(db:prepare('insert', 'INSERT INTO mytable (name, foo) VALUES ($1, $2)'))
+assert(db:run('insert', 'zeta', 32))
+assert(db:run('insert', 'eta', nil))
+
+assert(db:exec("COPY mytable TO STDIN (format csv, null '\\N')"))
 
 print("\nDumping CSV:")
 while true do
