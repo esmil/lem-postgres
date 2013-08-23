@@ -467,6 +467,33 @@ error:
 	}
 }
 
+void
+prepare_params(lua_State *T, int n, const char **values, int *lengths)
+{
+	int i;
+
+	for (i = 0; i < n; i++) {
+		size_t len;
+		const char *val;
+
+		if (lua_isnil(T, i+3)) {
+			val = NULL;
+			/* len is ignored by libpq */
+		} else {
+			val = lua_tolstring(T, i+3, &len);
+			if (val == NULL) {
+				free(values);
+				free(lengths);
+				luaL_argerror(T, i+3, "expected nil or string");
+				/* unreachable */
+			}
+		}
+
+		values[i] = val;
+		lengths[i] = len;
+	}
+}
+
 static int
 db_exec(lua_State *T)
 {
@@ -487,27 +514,8 @@ db_exec(lua_State *T)
 	if (n > 0) {
 		const char **values = lem_xmalloc(n * sizeof(char *));
 		int *lengths = lem_xmalloc(n * sizeof(int));
-		int i;
 
-		for (i = 0; i < n; i++) {
-			size_t len;
-			const char *val;
-
-			if (lua_isnil(T, i+3)) {
-				val = NULL;
-				/* len is ignored by libpq */
-			} else {
-				val = lua_tolstring(T, i+3, &len);
-				if (val == NULL) {
-					free(values);
-					free(lengths);
-					return luaL_argerror(T, i+3, "expected nil or string");
-				}
-			}
-
-			values[i] = val;
-			lengths[i] = len;
-		}
+		prepare_params(T, n, values, lengths);
 
 		n = PQsendQueryParams(d->conn, command, n,
 		                      NULL, values, lengths, NULL, 0);
@@ -578,27 +586,8 @@ db_run(lua_State *T)
 	if (n > 0) {
 		const char **values = lem_xmalloc(n * sizeof(char *));
 		int *lengths = lem_xmalloc(n * sizeof(int));
-		int i;
 
-		for (i = 0; i < n; i++) {
-			size_t len;
-			const char *val;
-
-			if (lua_isnil(T, i+3)) {
-				val = NULL;
-				/* len is ignored by libpq */
-			} else {
-				val = lua_tolstring(T, i+3, &len);
-				if (val == NULL) {
-					free(values);
-					free(lengths);
-					return luaL_argerror(T, i+3, "expected nil or string");
-				}
-			}
-
-			values[i] = val;
-			lengths[i] = len;
-		}
+		prepare_params(T, n, values, lengths);
 
 		n = PQsendQueryPrepared(d->conn, name, n,
 				values, lengths, NULL, 0);
