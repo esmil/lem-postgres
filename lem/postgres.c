@@ -1,6 +1,7 @@
 /*
  * This file is part of lem-postgres.
  * Copyright 2011 Emil Renner Berthing
+ * Copyright 2013 Asbjørn Sloth Tønnesen
  *
  * lem-postgres is free software: you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
@@ -490,12 +491,18 @@ db_exec(lua_State *T)
 
 		for (i = 0; i < n; i++) {
 			size_t len;
-			const char *val = lua_tolstring(T, i+3, &len);
+			const char *val;
 
-			if (val == NULL) {
-				free(values);
-				free(lengths);
-				return luaL_argerror(T, i+3, "expected string");
+			if (lua_isnil(T, i+3)) {
+				val = NULL;
+				/* len is ignored by libpq */
+			} else {
+				val = lua_tolstring(T, i+3, &len);
+				if (val == NULL) {
+					free(values);
+					free(lengths);
+					return luaL_argerror(T, i+3, "expected nil or string");
+				}
 			}
 
 			values[i] = val;
@@ -575,12 +582,18 @@ db_run(lua_State *T)
 
 		for (i = 0; i < n; i++) {
 			size_t len;
-			const char *val = lua_tolstring(T, i+3, &len);
+			const char *val;
 
-			if (val == NULL) {
-				free(values);
-				free(lengths);
-				return luaL_argerror(T, i+3, "expected string");
+			if (lua_isnil(T, i+3)) {
+				val = NULL;
+				/* len is ignored by libpq */
+			} else {
+				val = lua_tolstring(T, i+3, &len);
+				if (val == NULL) {
+					free(values);
+					free(lengths);
+					return luaL_argerror(T, i+3, "expected nil or string");
+				}
 			}
 
 			values[i] = val;
